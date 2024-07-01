@@ -107,7 +107,7 @@ def setup_llm():
 
 # Load and process data
 st.write("Loading and processing data...")
-folder_path = "/home/system2/Documents/projects/declathon/data"  # Replace with your actual folder path
+folder_path = "./data"  # Replace with your actual folder path
 data = load_data(folder_path)
 if data:
     text_chunks = split_data(data)
