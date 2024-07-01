@@ -158,4 +158,4 @@ yarl==1.9.4
 zipp==3.19.2
 chromadb
 db-sqlite3
-
+ollama
