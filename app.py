@@ -14,6 +14,7 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain.retrievers.multi_query import MultiQueryRetriever
 from langchain.memory import ConversationBufferMemory
 from langchain.schema import HumanMessage, AIMessage
+import chromadb
 
 class MessageHistoryChain:
     def __init__(self, retriever, llm, prompt, memory):
