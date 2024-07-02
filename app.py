@@ -15,47 +15,154 @@ from langchain.retrievers.multi_query import MultiQueryRetriever
 from langchain.memory import ConversationBufferMemory
 from langchain.schema import HumanMessage, AIMessage
 
+# Initialize user_info at the start of the Streamlit app
+if "user_info" not in st.session_state:
+    st.session_state.user_info = {}
+
 class MessageHistoryChain:
-    def __init__(self, retriever, llm, prompt, memory):
+    def __init__(self, retriever, llm, prompt, memory, dataset_features):
         self.retriever = retriever
         self.llm = llm
         self.prompt = prompt
         self.memory = memory
+        self.dataset_features = dataset_features
+        self.required_info = ['primary use', 'age', 'gender', 'height', 'weight'] + dataset_features
+        self.questions_asked = 0
+        self.max_questions = 6
+        self.last_question = None
 
     def invoke(self, inputs, response_placeholder):
-        query = inputs["question"]
-        context_documents = self.retriever.get_relevant_documents(query)
-        context = "\n".join([doc.page_content for doc in context_documents])
-        
-        # Extract URLs from context
-        urls = [doc.metadata.get('url', '') for doc in context_documents if 'url' in doc.metadata]
-        urls_str = "\n".join(list(set(urls)))
-        
-        # Format the chat history
-        chat_history = "\n".join(
-            [f"Human: {msg.content}" if isinstance(msg, HumanMessage) else f"AI: {msg.content}" for msg in self.memory.chat_memory.messages]
-        )
+        query = inputs["user_answer"]
+        last_question = self.last_question
+    
+        print(f"Received query: {query}")
+        print(f"Current user info before update: {st.session_state.user_info}")
 
-        context += "\n\n"+urls_str
-        
-        # Format the prompt input
-        prompt_input = self.prompt.format(context=context, question=query, chat_history=chat_history)
-        
-        # Simulate streaming by breaking down the response
-        response_parts = self.llm([HumanMessage(content=prompt_input)]).content.split("\n\n")
-        response_list = []
-        
+        if "conversation_started" not in st.session_state:
+            st.session_state.conversation_started = False
+
+        if not st.session_state.conversation_started:
+            st.session_state.conversation_started = True
+            response = self.start_query()
+        else:
+            # Update user info with the previous question as the key
+            if last_question:
+                self.update_user_info(query, last_question)
+
+            next_action = self.ask_next_question(query)
+            if next_action == "READY_TO_RECOMMEND" or self.questions_asked >= self.max_questions:
+                response = self.get_recommendations(query)
+            else:
+                response = next_action
+            self.last_question = response if next_action != "READY_TO_RECOMMEND" else None
+
+        print(f"Current user info after update: {st.session_state.user_info}")
+        print(f"Generated response: {response}")
+        print(f"Last question updated to: {self.last_question}")
+
+        # Simulate streaming
+        response_parts = response.split("\n\n")
         for part in response_parts:
-            response_list.append(part.strip())
-            response_placeholder.markdown("\n\n".join(response_list))  # Append URLs to the response
-            time.sleep(1.5)
-        
-        response = "\n\n".join(response_list)
+            response_placeholder.markdown(part.strip())
+            time.sleep(0.5)
+
+        self.memory.chat_memory.add_user_message(HumanMessage(content=query))
         self.memory.chat_memory.add_ai_message(AIMessage(content=response))
         return response
 
+    def get_initial_message(self):
+        return """Hello! I'm DecaBot, your sports equipment assistant. I'll ask you some questions to help find the best products for you. """
+    
+    def start_query(self):
+        return "What is the sport or product you're looking for?"
+
+    def update_user_info(self, query, question):
+        if "user_info" not in st.session_state:
+            st.session_state.user_info = {}
+        st.session_state.user_info[question] = query
+        print(f"Updated user info: {st.session_state.user_info}")
+
+    def has_all_required_info(self):
+        # Check if all required information is present in the values of user_info
+        return all(any(info.lower() in value.lower() for value in st.session_state.user_info.values()) for info in self.required_info)
+
+    def ask_next_question(self, query):
+        self.questions_asked += 1
+        chat_history = "\n".join(
+            [f"Human: {msg.content}" if isinstance(msg, HumanMessage) else f"AI: {msg.content}" 
+             for msg in self.memory.chat_memory.messages]
+        )
+
+        context_prompt = f"""
+        You are DecaBot, an AI assistant specializing in sports equipment recommendations. Your task is to ask the next relevant question to gather information about the user's needs.
+
+        Current user information: {st.session_state.user_info}
+        Required information: {self.required_info}
+        Questions asked so far: {self.questions_asked}
+        Maximum questions to ask: {self.max_questions}
+
+        Conversation history:
+        {chat_history}
+
+        User's latest response: {query}
+
+        Instructions:
+        1. Start with asking about primary use (sport or product), then age, gender, height, weight, etc. Ask one question at a time to make it interactive.
+        2. Analyze the current user information and the conversation history.
+        3. Identify the next piece of required information that hasn't been collected yet.
+        4. Ask a minimum number of questions which lead to finding the product that suits the user.
+        5. Be friendly and conversational in your tone.
+        6. Do not ask for information that has already been provided.
+        7. If you've asked {self.max_questions} questions or more, instead of asking another question, respond with: "READY_TO_RECOMMEND"
+
+        Provide only the next question, without any additional explanation or context.
+        """
+
+        response = self.llm([HumanMessage(content=context_prompt)]).content
+        return response
+
+    def get_recommendations(self, query):
+        chat_history = "\n".join(
+            [f"Human: {msg.content}" if isinstance(msg, HumanMessage) else f"AI: {msg.content}" 
+            for msg in self.memory.chat_memory.messages]
+        )
+
+        context_documents = self.retriever.get_relevant_documents(query)
+        context = "\n".join([doc.page_content for doc in context_documents])
+        urls = [doc.metadata.get('url', '') for doc in context_documents if 'url' in doc.metadata]
+        urls_str = "\n".join(list(set(urls)))
+        context += "\n\n" + urls_str
+
+        recommendation_prompt = f"""
+        You are DecaBot, an AI assistant specializing in sports equipment recommendations. Your task is to provide personalized product recommendations based on the user's information.
+
+        Context: {context}
+
+        Chat History: {chat_history}
+
+        User Information: {st.session_state.user_info}
+
+        User's latest query: {query}
+
+        Instructions:
+        1. Analyze the user's information and the available product data.
+        2. Provide 2-3 product recommendations that best match the user's needs and preferences.
+        3. For each recommendation, include:
+        a. Product name as a hyperlink using markdown syntax: [Product Name](URL)
+        b. A brief description of why this product is suitable for the user
+        4. Only use URLs from the provided context.
+        5. Ensure that you only recommend products that are present in the dataset and match the user's information.
+        6. Be friendly and conversational in your tone.
+        7. Summarize the user's preferences and requirements before providing recommendations.
+
+        Provide your recommendations in a concise and easy-to-read format.
+        """
+
+        response = self.llm([HumanMessage(content=recommendation_prompt)]).content
+        return response
+
 # Streamlit UI for querying
-st.title("Sports GPT")
+st.title("DecaBot - Your Sports Equipment Assistant")
 
 @st.cache_data(show_spinner=False)
 def load_data(folder_path):
@@ -63,9 +170,7 @@ def load_data(folder_path):
     data = []
     url_pattern = r'https?://(?:www\.)?[\w-]+\.[\w.-]+(?:/\S*)?'
     for file_path in csv_files:
-        
         if os.path.exists(file_path):
-            
             try:
                 loader = CSVLoader(file_path=file_path, encoding="utf-8", csv_args={'delimiter': ','})
                 documents = loader.load()
@@ -74,10 +179,9 @@ def load_data(folder_path):
                     match = re.search(url_pattern, doc.page_content.split(",")[-1].strip())  # Assuming URL is the last column
                     if match:
                         doc.metadata['url'] = match.group(0)
-                    print(doc.metadata['url'])
                 data.extend(documents)
             except Exception as e:
-                # st.write(f"Error loading {file_path}: {e}")
+                st.write(f"Error loading {file_path}: {e}")
                 continue
         else:
             st.write(f"File {file_path} does not exist.")
@@ -105,13 +209,30 @@ def setup_llm():
     local_model = "mistral"
     return ChatOllama(model=local_model)
 
+def extract_dataset_features(data):
+    features = set()
+    for doc in data:
+        features.update(doc.page_content.split(','))
+    return list(features - {'age', 'gender', 'height', 'weight', 'primary use'})
+
+def get_session_history(session_id):
+    if "history" not in st.session_state:
+        st.session_state.history = {}
+    if session_id not in st.session_state.history:
+        st.session_state.history[session_id] = ConversationBufferMemory(return_messages=True)
+    return st.session_state.history[session_id]
+
 # Load and process data
 st.write("Loading and processing data...")
 folder_path = "./data"  # Replace with your actual folder path
 data = load_data(folder_path)
+resp = None
 if data:
     text_chunks = split_data(data)
     st.write(f"Data split into {len(text_chunks)} chunks.")
+
+    # Extract dataset features
+    dataset_features = extract_dataset_features(data)
 
     # Initialize embeddings and vector store
     st.write("Initializing embeddings and vector store...")
@@ -139,94 +260,58 @@ if data:
     )
 
     # RAG prompt
-#     template = """
-#     Based on the following context and chat history, answer the user's question accurately and comprehensively:
-# 
-#     {context}
-# 
-#     If the context doesn't provide enough information, use your knowledge to answer related to the question  accurately.
-#     But give more importance to the context having url while answering the question using your knowlegde.
-#     If user's questions are too generalised ask follow up questions to understand the user queries before answering their queries
-#     Question: {question}
-#     Chat History: {chat_history}
-# 
-#     Ensure your response is:
-#     1. Clear, detailed, and helpful.
-#     2. Includes relevant product URLs from the context when suggesting a product.
-#     3. If a URL is not provided in the context, do not mention url is not provided; simply skip it.
-#     4.Don't provide url which is not present  in the context and don't repeat the same url in the response again and again.
-#       For example, if a product is mentioned in your response, append its URL from the context at the end of the response. Do not create URLs; use only those provided in the context.
-#     5. If user's questions are too generalised ask follow up questions to understand the user queries before answering their queries.
-# """
     template = """
-        You are an conversational AI assistant specializing in breifly answering the question based on the context. Your primary goal is to provide helpful, accurate, and personalized information to users based on the given context.
-        Given the following context and chat history, address the user's question:
-        {context}
+    You are DecaBot, an AI assistant specializing in sports equipment recommendations. Based on the given context, chat history, and user information, provide helpful and accurate responses.
 
-        Question: {question}
-        Chat History: {chat_history}
+    Context: {context}
 
-        Important Instructions:
-        1. If the user's query is general and not directly related to specific sports equipment or activities, ask ONE broad, non-personal follow-up question to clarify their needs.
+    Question: {question}
+    Chat History: {chat_history}
 
-        2. Your follow-up question should aim to understand what specific information or recommendations the user is seeking related to sports or outdoor activities.
+    Instructions:
+    1. Provide detailed and personalized responses based on the user's information and query.
+    2. When recommending products, include the full product name as a hyperlink using markdown syntax: [Product Name](URL).
+    3. Give a brief description of why each recommended product is suitable for the user.
+    4. Only use URLs provided in the context.
+    5. If more information is needed, ask relevant follow-up questions.
+    6. Keep your responses concise, friendly, and focused on the user's needs.
 
-        3. Provide detailed response for lis  ted products.Do not make assumptions about the user's interests or needs based on limited information.
-
-        4. When listing products:
-           - Include the full product name
-           - Make the product name itself a hyperlink using markdown syntax: [Product Name](URL)
-           - Do not include a separate "Link" text
-           - Provide a Detailed description about the product 
-
-        6. Don't provide url which is not present  in the context and don't repeat the same url in the response again and again.
-#           For example, if a product is mentioned in your response, append its URL from the context at the end of the response. Do not create URLs; use only those provided in the context
-
-        7. If the context doesn't provide enough information for a specific query, use general knowledge to provide a brief, relevant response related to context. Start the response with the friendly tone and end with "Let me know if you have any specific queries or  need more information. I'm here to help!"
-
-        Remember, your goal is to clarify the user's needs and provide relevant, easy-to-access information about products when appropriate.
-"""
+    Remember, your goal is to provide helpful and personalized information about sports equipment based on the user's profile and the available product data.
+    """
 
     prompt = ChatPromptTemplate.from_template(template)
 
-    # Define a function to get or create session history
-    def get_session_history(session_id):
-        if "history" not in st.session_state:
-            st.session_state.history = {}
-        if session_id not in st.session_state.history:
-            st.session_state.history[session_id] = ConversationBufferMemory()
-        return st.session_state.history[session_id]
-
     # Define the chain with message history
-    chain = MessageHistoryChain(retriever, llm, prompt, get_session_history("session"))
+    chain = MessageHistoryChain(retriever, llm, prompt, get_session_history("session"), dataset_features)
 
     # Streamlit UI for querying
-    st.write("Ready to accept queries.")
-    query_input = st.text_input("Enter your query:")
+    st.write("Ready to chat!")
 
-    # Button to submit query
-    if st.button("Enter"):
-        if query_input:
-            memory = get_session_history("session")
-            memory.chat_memory.add_user_message(HumanMessage(content=query_input))
-            
-            # Placeholder for the response
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+        # Send welcome message
+        welcome_message = chain.get_initial_message()
+        resp = welcome_message
+        st.session_state.messages.append({"role": "assistant", "content": welcome_message})
+
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if user_prompt := st.chat_input("Your response"):
+        st.session_state.messages.append({"role": "user", "content": user_prompt})
+        with st.chat_message("user"):
+            st.markdown(user_prompt)
+
+        with st.chat_message("assistant"):
             response_placeholder = st.empty()
-            result = chain.invoke({"question": query_input}, response_placeholder)
-            
-            # Append to session history
-            st.session_state.history["session"].chat_memory.add_ai_message(AIMessage(content=result))
+            print(f"Invoking chain with prompt: {user_prompt}")
+            print(f"Invoking with resp {resp}")
+            response = chain.invoke({"user_answer": user_prompt, "question": resp}, response_placeholder)
+            resp = response
+            st.session_state.messages.append({"role": "assistant", "content": response})
+    # Clear the input after sending
+    st.session_state.input = ""
 
-    # Display query history
-    if "history" in st.session_state and "session" in st.session_state.history:
-        st.write("*Query History:*")
-        history = st.session_state.history["session"].chat_memory.messages
-        for message in history:
-            role = "User" if isinstance(message, HumanMessage) else "AI"
-            st.write(f"*{role}:* {message.content}")
-            st.write("---")
 else:
     st.write("No data loaded. Please check the CSV files in the specified folder path.")
-
-
-
