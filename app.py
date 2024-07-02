@@ -15,9 +15,15 @@ from langchain.retrievers.multi_query import MultiQueryRetriever
 from langchain.memory import ConversationBufferMemory
 from langchain.schema import HumanMessage, AIMessage
 
-# Initialize user_info at the start of the Streamlit app
+# Initialize session state attributes
 if "user_info" not in st.session_state:
     st.session_state.user_info = {}
+if "user_inputs" not in st.session_state:
+    st.session_state.user_inputs = []
+if "model_questions" not in st.session_state:
+    st.session_state.model_questions = ["Welcome"]
+#if "messages" not in st.session_state:
+ #   st.session_state.messages = []
 
 class MessageHistoryChain:
     def __init__(self, retriever, llm, prompt, memory, dataset_features):
@@ -56,9 +62,9 @@ class MessageHistoryChain:
                 response = next_action
             self.last_question = response if next_action != "READY_TO_RECOMMEND" else None
 
-        print(f"Current user info after update: {st.session_state.user_info}")
-        print(f"Generated response: {response}")
-        print(f"Last question updated to: {self.last_question}")
+        #print(f"Current user info after update: {st.session_state.user_info}")
+        #print(f"Generated response: {response}")
+        #print(f"Last question updated to: {self.last_question}")
 
         # Simulate streaming
         response_parts = response.split("\n\n")
@@ -110,8 +116,8 @@ class MessageHistoryChain:
         1. Start with asking about primary use (sport or product), then age, gender, height, weight, etc. Ask one question at a time to make it interactive.
         2. Analyze the current user information and the conversation history.
         3. Identify the next piece of required information that hasn't been collected yet.
-        4. Ask a minimum number of questions which lead to finding the product that suits the user.
-        5. Be friendly and conversational in your tone.
+        4. Don't ask questions which  more technical about the product, ask more generalize questions which can be  more effective to find the user's needs.
+        5. Sounds like a human asking a question not like robot , be friendly and polite.
         6. Do not ask for information that has already been provided.
         7. If you've asked {self.max_questions} questions or more, instead of asking another question, respond with: "READY_TO_RECOMMEND"
 
@@ -121,7 +127,7 @@ class MessageHistoryChain:
         response = self.llm([HumanMessage(content=context_prompt)]).content
         return response
 
-    def get_recommendations(self, query):
+    def get_recommendations(self,query,user_info):
         chat_history = "\n".join(
             [f"Human: {msg.content}" if isinstance(msg, HumanMessage) else f"AI: {msg.content}" 
             for msg in self.memory.chat_memory.messages]
@@ -140,7 +146,7 @@ class MessageHistoryChain:
 
         Chat History: {chat_history}
 
-        User Information: {st.session_state.user_info}
+        User Information: {user_info}
 
         User's latest query: {query}
 
@@ -222,11 +228,17 @@ def get_session_history(session_id):
         st.session_state.history[session_id] = ConversationBufferMemory(return_messages=True)
     return st.session_state.history[session_id]
 
+def questions_answers_dict_mapping(model_questions,user_inputs):
+    print(len(user_inputs))
+    print(len(model_questions))
+    qa_mapping = {model_questions[i]: user_inputs[i] for i in range(len(user_inputs))}
+    return qa_mapping
+
+
 # Load and process data
 st.write("Loading and processing data...")
 folder_path = "./data"  # Replace with your actual folder path
 data = load_data(folder_path)
-resp = None
 if data:
     text_chunks = split_data(data)
     st.write(f"Data split into {len(text_chunks)} chunks.")
@@ -291,7 +303,6 @@ if data:
         st.session_state.messages = []
         # Send welcome message
         welcome_message = chain.get_initial_message()
-        resp = welcome_message
         st.session_state.messages.append({"role": "assistant", "content": welcome_message})
 
     for message in st.session_state.messages:
@@ -303,13 +314,23 @@ if data:
         with st.chat_message("user"):
             st.markdown(user_prompt)
 
-        with st.chat_message("assistant"):
-            response_placeholder = st.empty()
-            print(f"Invoking chain with prompt: {user_prompt}")
-            print(f"Invoking with resp {resp}")
-            response = chain.invoke({"user_answer": user_prompt, "question": resp}, response_placeholder)
-            resp = response
-            st.session_state.messages.append({"role": "assistant", "content": response})
+        if len(st.session_state.model_questions)>7:
+            user_info_dict = questions_answers_dict_mapping(st.session_state.model_questions, st.session_state.user_inputs)
+            st.session_state.messages.append({"role": "assistant", "content": "The number of questions has exceeded 6. The questions and answers have been processed."})
+            recommend= chain.get_recommendations(st.session_state.model_questions,user_info_dict)
+            st.write(recommend)
+        else:
+            with st.chat_message("assistant"):
+                response_placeholder = st.empty()
+                st.session_state.user_inputs.append(user_prompt)  # Store user input in session state
+                print(st.session_state.user_inputs)
+                print(f"Invoking chain with prompt: {user_prompt}")
+                
+                response = chain.invoke({"user_answer": user_prompt}, response_placeholder)
+                st.session_state.model_questions.append(response)  # Store model questions in session state
+                print(st.session_state.model_questions)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+
     # Clear the input after sending
     st.session_state.input = ""
 
