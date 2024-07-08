@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sports GPT</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+<body>
+    <h1>Sports GPT</h1>
+    <div id="chat"></div>
+    <input type="text" id="message" placeholder="Enter your query">
+    <button onclick="sendMessage()">Send</button>
+
+    <script>
+        var socket = io();
+        
+        function sendMessage() {
+            var message = document.getElementById('message').value;
+            socket.emit('send_message', {message: message});
+            document.getElementById('message').value = '';
+        }
+
+        socket.on('receive_message', function(data) {
+            var chat = document.getElementById('chat');
+            chat.innerHTML += '<p><strong>AI:</strong> ' + data.message + '</p>';
+        });
+
+        socket.on('new_token', function(data) {
+            var chat = document.getElementById('chat');
+            if (chat.lastElementChild && chat.lastElementChild.classList.contains('ai-message')) {
+                chat.lastElementChild.textContent += data.token;
+            } else {
+                chat.innerHTML += '<p class="ai-message"><strong>AI:</strong> ' + data.token + '</p>';
+            }
+        });
+    </script>
+</body>
+</html>

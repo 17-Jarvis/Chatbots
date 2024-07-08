@@ -1,0 +1,172 @@
+import time
+import os
+import re
+import glob
+from flask import Flask, render_template
+from flask_socketio import SocketIO, emit
+from langchain.document_loaders.csv_loader import CSVLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import OllamaEmbeddings
+from langchain.prompts import ChatPromptTemplate, PromptTemplate
+from langchain_community.chat_models import ChatOllama
+from langchain.retrievers.multi_query import MultiQueryRetriever
+from langchain.memory import ConversationBufferMemory
+from langchain.schema import HumanMessage, AIMessage
+from langchain.callbacks.base import BaseCallbackHandler
+
+app = Flask(__name__)
+socketio = SocketIO(app)
+
+class SocketIOCallbackHandler(BaseCallbackHandler):
+    def on_llm_new_token(self, token: str, **kwargs) -> None:
+        socketio.emit('new_token', {'token': token})
+
+class MessageHistoryChain:
+    def __init__(self, retriever, llm, prompt, memory):
+        self.retriever = retriever
+        self.llm = llm
+        self.prompt = prompt
+        self.memory = memory
+
+    def invoke(self, inputs):
+        query = inputs["question"]
+        context_documents = self.retriever.get_relevant_documents(query)
+        context = "\n".join([doc.page_content for doc in context_documents])
+        
+        urls = [doc.metadata.get('url', '') for doc in context_documents if 'url' in doc.metadata]
+        urls_str = "\n".join(list(set(urls)))
+        
+        chat_history = "\n".join(
+            [f"Human: {msg.content}" if isinstance(msg, HumanMessage) else f"AI: {msg.content}" for msg in self.memory.chat_memory.messages]
+        )
+
+        context += "\n\n"+urls_str
+        
+        prompt_input = self.prompt.format(context=context, question=query, chat_history=chat_history)
+        
+        response = self.llm([HumanMessage(content=prompt_input)]).content
+        self.memory.chat_memory.add_ai_message(AIMessage(content=response))
+        return response
+
+def load_data(folder_path):
+    csv_files = glob.glob(os.path.join(folder_path, "*.csv"))
+    data = []
+    url_pattern = r'https?://(?:www\.)?[\w-]+\.[\w.-]+(?:/\S*)?'
+    for file_path in csv_files:
+        if os.path.exists(file_path):
+            try:
+                loader = CSVLoader(file_path=file_path, encoding="utf-8", csv_args={'delimiter': ','})
+                documents = loader.load()
+                for doc in documents:
+                    match = re.search(url_pattern, doc.page_content.split(",")[-1].strip())
+                    if match:
+                        doc.metadata['url'] = match.group(0)
+                    print(doc.metadata['url'])
+                data.extend(documents)
+            except Exception as e:
+                print(f"Error loading {file_path}: {e}")
+                continue
+        else:
+            print(f"File {file_path} does not exist.")
+    return data
+
+def split_data(_data):
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=20)
+    return text_splitter.split_documents(_data)
+
+def create_embeddings():
+    return OllamaEmbeddings(model="nomic-embed-text", show_progress=True)
+
+def create_vector_db(_text_chunks, _embeddings):
+    return Chroma.from_documents(
+        documents=_text_chunks,
+        embedding=_embeddings,
+        collection_name="local-rag"
+    )
+
+def setup_llm():
+    local_model = "mistral"
+    return ChatOllama(model=local_model, callbacks=[SocketIOCallbackHandler()])
+
+print("Loading and processing data...")
+folder_path = "/home/arq/Desktop/projects/declathon/data"  # Replace with your actual folder path
+data = load_data(folder_path)
+
+if data:
+    text_chunks = split_data(data)
+    print(f"Data split into {len(text_chunks)} chunks.")
+
+    print("Initializing embeddings and vector store...")
+    embeddings = create_embeddings()
+    vector_db = create_vector_db(text_chunks, embeddings)
+
+    print("Setting up LLM and retriever...")
+    llm = setup_llm()
+
+    QUERY_PROMPT = PromptTemplate(
+        input_variables=["question"],
+        template="""You are a highly knowledgeable conversational AI language model assistant. Your task is to generate five
+        different versions of the given user question to retrieve the most relevant documents from
+        a vector database. By generating multiple perspectives on the user question, your
+        goal is to help the user overcome some of the limitations of the distance-based
+        similarity search. Provide these alternative questions separated by newlines. Maintain a professional and friendly tone.
+        Original question: {question}"""
+    )
+
+    retriever = MultiQueryRetriever.from_llm(
+        vector_db.as_retriever(),
+        llm,
+        prompt=QUERY_PROMPT
+    )
+
+    template = """
+        You are an conversational AI assistant specializing in breifly answering the question based on the context. Your primary goal is to provide helpful, accurate, and personalized information to users based on the given context.
+        Given the following context and chat history, address the user's question:
+        {context}
+
+        Question: {question}
+        Chat History: {chat_history}
+
+        Important Instructions:
+        1. If the user's query is general and not directly related to specific sports equipment or activities, ask ONE broad, non-personal follow-up question to clarify their needs.
+
+        2. Your follow-up question should aim to understand what specific information or recommendations the user is seeking related to sports or outdoor activities.
+
+        3. Provide detailed response for lis  ted products.Do not make assumptions about the user's interests or needs based on limited information.
+
+        4. When listing products:
+           - Include the full product name
+           - Make the product name itself a hyperlink using markdown syntax: [Product Name](URL)
+           - Do not include a separate "Link" text
+           - Provide a Detailed description about the product 
+
+        6. Don't provide url which is not present  in the context and don't repeat the same url in the response again and again.
+#           For example, if a product is mentioned in your response, append its URL from the context at the end of the response. Do not create URLs; use only those provided in the context
+
+        7. If the context doesn't provide enough information for a specific query, use general knowledge to provide a brief, relevant response related to context. Start the response with the friendly tone and end with "Let me know if you have any specific queries or  need more information. I'm here to help!"
+
+        Remember, your goal is to clarify the user's needs and provide relevant, easy-to-access information about products when appropriate.
+    """
+
+    prompt = ChatPromptTemplate.from_template(template)
+
+    memory = ConversationBufferMemory()
+    chain = MessageHistoryChain(retriever, llm, prompt, memory)
+
+    @app.route('/')
+    def index():
+        return render_template('index.html')
+
+    @socketio.on('send_message')
+    def handle_message(data):
+        query = data['message']
+        memory.chat_memory.add_user_message(HumanMessage(content=query))
+        result = chain.invoke({"question": query})
+        #emit('receive_message', {'message': result})
+
+    if __name__ == '__main__':
+        socketio.run(app, debug=True)
+
+else:
+    print("No data loaded. Please check the CSV files in the specified folder path.")
