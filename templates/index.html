@@ -3,27 +3,134 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sports GPT</title>
+    <title>DecaBot - Sports Assistant</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        table{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th,td{
+            border : 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th{
+            background-color: #f2f2f2;
+        }
+        #header {
+            background-color: #f8f8f8;
+            padding: 10px;
+            text-align: center;
+            border-bottom: 1px solid #ccc;
+        }
+        #chat-container {
+            display: flex;
+            flex: 1;
+            flex-direction: column;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+        #chat {
+            border: 1px solid #ccc;
+            padding: 10px;
+            flex: 1;
+            overflow-y: auto;
+            box-sizing: border-box;
+        }
+        .ai-message {
+            color: blue;
+            margin: 5px 0;
+        }
+        .user-message {
+            color: green;
+            margin: 5px 0;
+        }
+        img {
+            max-width: 100%;
+            margin: 10px 0;
+        }
+        #input-container {
+            display: flex;
+            border-top: 1px solid #ccc;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+        #message {
+            flex: 1;
+            padding: 10px;
+            font-size: 16px;
+        }
+        #send-button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        #send-button:hover {
+            background-color: #45a049;
+        }
+        #add-to-cart-button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            display: none;
+            margin-top: 10px;
+        }
+        #add-to-cart-button:hover {
+            background-color: #45a049;
+        }
+    </style>
 </head>
 <body>
-    <h1>Sports GPT</h1>
-    <div id="chat"></div>
-    <input type="text" id="message" placeholder="Enter your query">
-    <button onclick="sendMessage()">Send</button>
+    <div id="header">
+        <h1>DecaBot - Sports Assistant</h1>
+    </div>
+    <div id="chat-container">
+        <div id="chat"></div>
+        <div id="input-container">
+            <input type="text" id="message" placeholder="Enter your query">
+            <button id="send-button" onclick="sendMessage()">Send</button>
+        </div>
+        <button id="add-to-cart-button" onclick="addToCart()">Add to Cart</button>
+    </div>
 
     <script>
         var socket = io();
         
         function sendMessage() {
             var message = document.getElementById('message').value;
+            if (message.trim() === '') return;
+            
             socket.emit('send_message', {message: message});
             document.getElementById('message').value = '';
+            
+            var chat = document.getElementById('chat');
+            chat.innerHTML += '<p class="user-message"><strong>User:</strong> ' + message + '</p>';
+            chat.scrollTop = chat.scrollHeight;
         }
 
-        socket.on('receive_message', function(data) {
-            var chat = document.getElementById('chat');
-            chat.innerHTML += '<p><strong>AI:</strong> ' + data.message + '</p>';
+        function addToCart() {
+            alert('Product added to cart!');
+            // Here you can add more functionality for adding the product to the cart
+        }
+
+        socket.on('connect', function() {
+            console.log('Connected to server');
         });
 
         socket.on('new_token', function(data) {
@@ -31,7 +138,118 @@
             if (chat.lastElementChild && chat.lastElementChild.classList.contains('ai-message')) {
                 chat.lastElementChild.textContent += data.token;
             } else {
-                chat.innerHTML += '<p class="ai-message"><strong>AI:</strong> ' + data.token + '</p>';
+                chat.innerHTML += '<p class="ai-message"><strong>DecaBot:</strong> ' + data.token + '</p>';
+            }
+            chat.scrollTop = chat.scrollHeight;
+        });
+
+        socket.on('receive_message', function(data) {
+            var chat = document.getElementById('chat');
+            var message = data.message;
+
+            // Check if the message contains a JSON comparison
+            if (message.includes('```json')) {
+                var jsonStart = message.indexOf('```json') + 7;
+                var jsonEnd = message.lastIndexOf('```');
+                var jsonStr = message.substring(jsonStart, jsonEnd).trim();
+                
+                try {
+                    var comparisonData = JSON.parse(jsonStr);
+                    var table = createComparisonTable(comparisonData);
+                    chat.innerHTML += '<p class="ai-message"><strong>DecaBot:</strong> Here\'s a comparison of the products:</p>';
+                    chat.appendChild(table);
+                } catch (e) {
+                    console.error('Error parsing JSON:', e);
+                    chat.innerHTML += '<p class="ai-message"><strong>DecaBot:</strong> ' + message + '</p>';
+                }
+            } else {
+                chat.innerHTML += '<p class="ai-message"><strong>DecaBot:</strong> ' + message + '</p>';
+            }
+
+            if (data.images && data.images.length > 0) {
+                var imageContainer = document.createElement('div');
+                imageContainer.className = 'image-container';
+                data.images.forEach(function(imageUrl) {
+                    var img = document.createElement('img');
+                    img.src = imageUrl;
+                    imageContainer.appendChild(img);
+                });
+                chat.appendChild(imageContainer);
+            }
+
+            chat.scrollTop = chat.scrollHeight;
+
+            // Show or hide the "Add to Cart" button based on the cta_button value
+            var addToCartButton = document.getElementById('add-to-cart-button');
+            if (data.cta_button) {
+                addToCartButton.style.display = 'block';
+            } else {
+                addToCartButton.style.display = 'none';
+            }
+        });
+        function receive_message(data) {
+    var chat = document.getElementById('chat');
+    var messageDiv = document.createElement('div');
+    messageDiv.className = 'ai-message';
+    messageDiv.innerHTML = '<strong>DecaBot:</strong> ' + linkify(data.message);
+    chat.appendChild(messageDiv);
+    chat.scrollTop = chat.scrollHeight;
+}
+
+        function linkify(text) {
+    var urlRegex = /\[([^\]]+)\]\((https?:\/\/[^\s]+)\)/g;
+    return text.replace(urlRegex, function(match, p1, p2) {
+        return '<a href="' + p2 + '" target="_blank">' + p1 + '</a>';
+    });
+}
+        function createComparisonTable(data) {
+            var table = document.createElement('table');
+            var thead = document.createElement('thead');
+            var tbody = document.createElement('tbody');
+
+            // Create table header
+            var headerRow = document.createElement('tr');
+            ['', 'Product 1', 'Product 2'].forEach(function(headerText) {
+                var th = document.createElement('th');
+                th.textContent = headerText;
+                headerRow.appendChild(th);
+            });
+            thead.appendChild(headerRow);
+            table.appendChild(thead);
+
+            // Create table body
+            var rows = [
+                { label: 'Name', key1: 'product1', key2: 'product2' },
+                { label: 'Price', key1: 'price1', key2: 'price2' },
+                { label: 'Features', key1: 'features1', key2: 'features2' },
+                { label: 'URL', key1: 'url1', key2: 'url2' }
+            ];
+
+            rows.forEach(function(row) {
+                var tr = document.createElement('tr');
+                var tdLabel = document.createElement('td');
+                tdLabel.textContent = row.label;
+                tr.appendChild(tdLabel);
+
+                var td1 = document.createElement('td');
+                td1.textContent = data[row.key1];
+                tr.appendChild(td1);
+
+                var td2 = document.createElement('td');
+                td2.textContent = data[row.key2];
+                tr.appendChild(td2);
+
+                tbody.appendChild(tr);
+            });
+
+            table.appendChild(tbody);
+            return table;
+        }
+
+        // Event listener for Enter key in the input field
+        document.getElementById('message').addEventListener('keypress', function(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
             }
         });
     </script>
